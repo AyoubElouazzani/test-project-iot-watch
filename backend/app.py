@@ -8,10 +8,17 @@ import pandas as pd
 from flask_cors import CORS
 from dotenv import load_dotenv
 from datetime import datetime, timedelta
+from flask_socketio import SocketIO, emit
 from sklearn.preprocessing import MinMaxScaler
 from flask import Flask, jsonify, request, send_from_directory
 from services.weather_fetcher import *
 from models import *
+
+# Initialize SocketIO
+load_dotenv()
+app = Flask(__name__)
+CORS(app)
+socketio = SocketIO(app, cors_allowed_origins="*")
 
 load_dotenv()
 app = Flask(__name__)
@@ -29,11 +36,62 @@ init_db()
 
 def run_background_services():
     def temperature_updater():
-        """Update temperature data continuously"""
+        """Update temperature data continuously and broadcast via WebSocket"""
+        last_temp = None
+        last_trend = "stable"
+        
         while True:
             try:
-                get_current_temperature()
+                # Get current temperature
+                current_temp = get_current_temperature()
+                
+                # Calculate trend
+                if last_temp is not None:
+                    if current_temp > last_temp + 0.1:  # Threshold for "up"
+                        trend = "up"
+                    elif current_temp < last_temp - 0.1:  # Threshold for "down"
+                        trend = "down"
+                    else:
+                        trend = "stable"
+                else:
+                    trend = "stable"
+                
+                # Only broadcast if temperature or trend changed significantly
+                if (last_temp is None or 
+                    abs(current_temp - last_temp) >= 0.1 or 
+                    trend != last_trend):
+                    
+                    # Get current hour stats for broadcast
+                    conn = get_db_connection()
+                    cursor = conn.cursor()
+                    
+                    current_hour = datetime.now().strftime('%Y-%m-%d %H')
+                    cursor.execute('''
+                    SELECT AVG(temperature) as avg_temp, COUNT(*) as count
+                    FROM temperature_data
+                    WHERE strftime('%Y-%m-%d %H', timestamp) = ?
+                    ''', (current_hour,))
+                    
+                    hour_stats = cursor.fetchone()
+                    conn.close()
+                    
+                    # Broadcast to all connected clients
+                    data = {
+                        "time": datetime.now().isoformat(),
+                        "temperature": float(current_temp),
+                        "current_hour_avg": float(hour_stats['avg_temp']) if hour_stats and hour_stats['avg_temp'] else current_temp,
+                        "readings_this_hour": hour_stats['count'] if hour_stats else 0,
+                        "trend": trend,
+                        "is_live": True
+                    }
+                    
+                    socketio.emit('temperature_update', data)
+                    print(f"Broadcasted temperature update: {current_temp}°C, trend: {trend}")
+                
+                last_temp = current_temp
+                last_trend = trend
                 time.sleep(1)
+                
             except Exception as e:
                 print(f"Error in temperature updater: {str(e)}")
                 time.sleep(1)
@@ -559,6 +617,30 @@ def serve(path):
     else:
         return send_from_directory(static_dir, 'index.html')
 
+@socketio.on('connect')
+def handle_connect():
+    print(f'Client connected: {request.sid}')
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute('''SELECT * FROM temperature_data ORDER BY timestamp DESC LIMIT 1''')
+        latest = cursor.fetchone()
+        conn.close()
+        
+        if latest:
+            emit('temperature_update', {
+                "time": latest['timestamp'],
+                "temperature": float(latest['temperature']),
+                "trend": "stable",
+                "is_live": True
+            })
+    except Exception as e:
+        print(f"Error sending initial temperature: {e}")
+
+@socketio.on('disconnect')
+def handle_disconnect():
+    print(f'Client disconnected: {request.sid}')
+
 if __name__ == "__main__":
     run_background_services()
-    app.run(host="0.0.0.0", port=5000)
+    socketio.run(app, host="0.0.0.0", port=5000, debug=False)
