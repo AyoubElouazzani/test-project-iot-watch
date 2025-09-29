@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { ArrowDown, ArrowUp, Thermometer, RefreshCw } from "lucide-react";
+import { ArrowDown, ArrowUp, Thermometer, RefreshCw, AlertTriangle } from "lucide-react";
 
 const TemperatureCard = ({ time, temperature, trend }) => {
   const formatTime = (timeString) => {
@@ -81,7 +81,6 @@ const TemperatureDisplay = () => {
       });
     } catch (err) {
       console.error('Failed to fetch temperature:', err);
-      // Keep showing the component even if fetch fails
       setData(prev => ({ ...prev }));
     } finally {
       setLoading(false);
@@ -89,13 +88,8 @@ const TemperatureDisplay = () => {
   };
 
   useEffect(() => {
-    // Initial fetch
     fetchTemperature();
-
-    // Set up interval to fetch every 30 seconds
     const interval = setInterval(fetchTemperature, 30000);
-
-    // Cleanup interval on component unmount
     return () => clearInterval(interval);
   }, []);
 
@@ -107,13 +101,27 @@ const TemperatureDisplay = () => {
     );
   }
 
+  const displayTemp = data.temperature;
+
   return (
     <div className="flex items-center justify-center min-h-screen">
-      <TemperatureCard 
-        time={data.time}
-        temperature={data.temperature}
-        trend={data.trend}
-      />
+      <div className="flex flex-col gap-4 items-center">
+        {displayTemp !== null && displayTemp > 35 && (
+          <div className="flex items-center gap-3 px-6 py-4 bg-red-50 border-2 border-red-500 rounded-xl max-w-96 w-full">
+            <AlertTriangle className="h-6 w-6 text-red-500 flex-shrink-0" />
+            <div className="flex flex-col gap-1">
+              <h3 className="text-red-700 font-semibold text-sm">High Temperature Alert</h3>
+              <p className="text-red-600 text-sm">Temperature has exceeded 35°C threshold</p>
+            </div>
+          </div>
+        )}
+        
+        <TemperatureCard 
+          time={data.time}
+          temperature={displayTemp}
+          trend={data.trend}
+        />
+      </div>
     </div>
   );
 };
